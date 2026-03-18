@@ -4,25 +4,35 @@ import json
 from aiogram import Bot, Dispatcher, types, F
 from aiohttp import web
 
-# Конфигурация
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 10000))
 
-# ЖЕСТКАЯ ПРИВЯЗКА ID (Чумовые тренировки)
 TARGET_GROUP_ID = -1003773374182 
 DB_TAG = "#DATABASE_EXERCISE_BOT#"
+
+# Текст, который всегда будет снизу
+FOOTER_TEXT = (
+    "\nРасчёт по долгам происходит только при свидетелях "
+    "(минимум 3 из данной группы, +1 - тот, кто делает), либо на видео!"
+)
+
+# Начальные данные (чтобы не с нуля)
+INITIAL_DATA = {
+    "Артём": {"отж": 175, "прис": 100, "план": "3мин", "вис": "6мин", "деньги": "700р"},
+    "Лиза": {"вис": "34сек", "гант": 35, "план": "2:51мин", "прис": 165, "вис_доп": "3мин", "гант_доп": 50},
+    "Вова": {"план": "2мин", "гант": 50, "отж": 25, "прис": 100},
+    "Настя": {"гант": 100, "отж": 100, "прис": 100},
+    "Игорь": {"подт": 30, "план": "3мин", "прис": 100}
+}
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Карты имен и упражнений
 NAME_MAP = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
 EX_MAP = {
     "отж": "отжиманий", "прис": "приседаний", "план": "планки",
     "вис": "вис", "гант": "гантели на спину", "подт": "подтягиваний"
 }
-
-# --- Работа с данными ---
 
 async def get_db_message():
     try:
@@ -30,53 +40,43 @@ async def get_db_message():
         pinned = chat.pinned_message
         if pinned and DB_TAG in (pinned.text or ""):
             return pinned
-    except:
-        return None
+    except: return None
 
 async def load_data():
     msg = await get_db_message()
     if msg:
         try:
-            # Ищем JSON после значка 📊 в тексте закрепа
             json_part = msg.text.split("📊")[-1].strip()
             return json.loads(json_part)
-        except:
-            return {}
-    return {}
+        except: return INITIAL_DATA # Если не смогли прочитать, берем начальные
+    return INITIAL_DATA
 
 async def save_data(data):
     lines = ["<b>📊 АКТУАЛЬНЫЕ ДОЛГИ</b>\n"]
-    has_debts = False
     
     for name, exercises in data.items():
-        ex_list = [f"{val} {EX_MAP.get(ex, ex)}" for ex, val in exercises.items() if val > 0]
+        ex_list = []
+        for ex, val in exercises.items():
+            if isinstance(val, int) and val > 0:
+                ex_list.append(f"{val} {EX_MAP.get(ex, ex)}")
+            elif isinstance(val, str):
+                ex_list.append(f"{val} {EX_MAP.get(ex, ex)}")
+        
         if ex_list:
             lines.append(f"• <b>{name}</b>: {', '.join(ex_list)}")
-            has_debts = True
-    
-    if not has_debts:
-        lines.append("Все долги закрыты! Красавчики.")
 
-    # Добавляем техническую инфу для бота
+    lines.append(FOOTER_TEXT)
     lines.append(f"\n{DB_TAG}")
     lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
     
     text = "\n".join(lines)
     
     try:
-        # 1. Открепляем ВСЕ сообщения в чате (чтобы не копились старые закрепы)
         await bot.unpin_all_chat_messages(TARGET_GROUP_ID)
-        
-        # 2. Отправляем НОВОЕ сообщение
         new_msg = await bot.send_message(TARGET_GROUP_ID, text, parse_mode="HTML")
-        
-        # 3. Закрепляем НОВОЕ сообщение
         await bot.pin_chat_message(TARGET_GROUP_ID, new_msg.message_id)
-        
     except Exception as e:
-        print(f"Ошибка при обновлении закрепа: {e}")
-
-# --- ОБРАБОТЧИКИ ---
+        print(f"Ошибка: {e}")
 
 @dp.message(F.text.lower().contains("@all") | F.text.lower().contains("@все"))
 async def call_everyone(message: types.Message):
@@ -97,34 +97,28 @@ async def handle_debts(message: types.Message):
     try:
         val = int(val_str)
     except:
-        await message.answer("⚠️ Ошибка: количество должно быть числом.")
+        await message.answer("⚠️ Введите число.")
         return
 
     full_name = NAME_MAP.get(name_init)
-    if not full_name:
-        await message.answer(f"⚠️ Имя '{name_init}' не в списке.")
-        return
+    if not full_name: return
 
     data = await load_data()
-    if full_name not in data:
-        data[full_name] = {}
+    if full_name not in data: data[full_name] = {}
     
+    # Пытаемся работать только с числовыми значениями через команды
     current = data[full_name].get(ex_code, 0)
+    if not isinstance(current, int): current = 0 
     
     if "+" in action:
         data[full_name][ex_code] = current + val
     else:
         data[full_name][ex_code] = max(0, current - val)
 
-    # Вызываем сохранение (оно теперь шлет новое сообщение и крепит его)
     await save_data(data)
-    # Ответ бота можно убрать или оставить коротким, так как новое сообщение и так прилетит
-    await message.delete() # Удаляем команду пользователя для чистоты чата
+    await message.delete()
 
-# --- СЕРВЕР ---
-
-async def health_check(request):
-    return web.Response(text="Bot is running")
+async def health_check(request): return web.Response(text="OK")
 
 async def main():
     app = web.Application()
@@ -132,8 +126,6 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    
-    print("Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
