@@ -8,7 +8,9 @@ from aiohttp import web
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 10000))
-GROUP_ID = -1003801387499 
+
+# НОВЫЙ ID БЕСЕДЫ "ЧУМОВЫЕ ТРЕНИРОВКИ"
+GROUP_ID = -1003773374182 
 DB_TAG = "#DATABASE_EXERCISE_BOT#"
 
 bot = Bot(token=TOKEN)
@@ -26,9 +28,11 @@ async def get_db_message():
     try:
         chat = await bot.get_chat(GROUP_ID)
         pinned = chat.pinned_message
+        # Ищем тег базы данных в тексте закрепа
         if pinned and DB_TAG in (pinned.text or ""):
             return pinned
-    except:
+    except Exception as e:
+        print(f"Ошибка при поиске закрепа: {e}")
         return None
     return None
 
@@ -36,10 +40,11 @@ async def load_data():
     msg = await get_db_message()
     if msg:
         try:
-            # Вытаскиваем JSON из последней строки сообщения
+            # Пытаемся вытащить JSON данные, которые бот прячет в конце сообщения
             json_part = msg.text.split("📊")[-1].strip()
             return json.loads(json_part)
         except:
+            # Если JSON нет (например, сообщение написано руками), возвращаем пустой словарь
             return {}
     return {}
 
@@ -57,6 +62,7 @@ async def save_data(data):
         lines.append("Все долги закрыты! Красавчики.")
 
     lines.append(f"\n{DB_TAG}")
+    # Прячем данные для парсинга в последнюю строку
     lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
     
     text = "\n".join(lines)
@@ -65,12 +71,14 @@ async def save_data(data):
     if msg:
         await bot.edit_message_text(text, GROUP_ID, msg.message_id, parse_mode="HTML")
     else:
+        # Если вдруг закреп пропал, создаем новый
         new_msg = await bot.send_message(GROUP_ID, text, parse_mode="HTML")
         await bot.pin_chat_message(GROUP_ID, new_msg.message_id)
 
 # --- Обработка команд ---
 
-@dp.message(F.text.startswith(("!долг+", "!долг-")))
+# Фильтр: обрабатываем только если ID чата совпадает с нужной группой
+@dp.message(F.chat.id == GROUP_ID, F.text.startswith(("!долг+", "!долг-")))
 async def handle_debts(message: types.Message):
     parts = message.text.split()
     if len(parts) < 4: return
@@ -91,9 +99,6 @@ async def handle_debts(message: types.Message):
     data[full_name][ex_code] = (current + val) if "+" in action else max(0, current - val)
 
     await save_data(data)
-    
-    # Пинг всех через невидимый символ (как ты любишь)
-    # Здесь можно добавить список ID, если нужно, но пока просто уведомление
     await message.answer(f"📢 <b>Внимание всем!</b>\nСписок обновлен в закрепе.")
 
 # --- Рассылка и системное ---
@@ -108,18 +113,16 @@ async def send_kv_reminder():
 async def health_check(request):
     return web.Response(text="Bot is running")
 
-@dp.message()
+@dp.message(F.chat.id == GROUP_ID)
 async def start_cmd(message: types.Message):
     if message.text == "/start":
-        await message.answer("Бот готов к работе. База данных будет создана в закрепе после первой команды !долг+")
+        await message.answer("Бот настроен на эту беседу. Работаем!")
 
 async def main():
-    # Настройка планировщика
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
     scheduler.add_job(send_kv_reminder, 'cron', day_of_week='thu,fri,sat,sun', hour=21, minute=0)
     scheduler.start()
 
-    # Запуск веб-сервера для Render
     app = web.Application()
     app.router.add_get("/", health_check)
     runner = web.AppRunner(app)
