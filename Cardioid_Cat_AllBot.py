@@ -8,36 +8,67 @@ TARGET_GROUP_ID = -1003773374182
 DB_TAG = "#DATABASE_EXERCISE_BOT#"
 
 TIME_EXERCISES = ["план", "вис"]
-EX_MAP = {"отж": "отжиманий", "прис": "приседаний", "план": "планка", "вис": "вис", "гант": "гантели", "подт": "подтягиваний", "руб": "рублей"}
+EX_MAP = {
+    "отж": "отжиманий", "прис": "приседаний", "план": "планка",
+    "вис": "вис", "гант": "гантелей на спину (каждая рука)", 
+    "подт": "подтягиваний", "руб": "рублей"
+}
 
-def force_int(val):
-    """Превращает что угодно (даже '3 мин' или None) в число без ошибок."""
+# НАЧАЛЬНЫЕ ДАННЫЕ (Время сразу переведено в секунды)
+INITIAL_DATA = {
+    "Артём": {"отж": 175, "прис": 100, "план": 180, "вис": 360, "руб": 700},
+    "Лиза": {"вис": 214, "гант": 85, "план": 171, "прис": 165},
+    "Вова": {"план": 120, "гант": 50, "отж": 25, "прис": 100},
+    "Настя": {"гант": 100, "отж": 100, "прис": 100},
+    "Игорь": {"подт": 30, "план": 180, "прис": 100}
+}
+
+def smart_to_seconds(val, is_time_ex=False):
+    if val is None: return 0
+    s = str(val).lower().replace("мин", "").replace("сек", "").strip()
     try:
-        if isinstance(val, int): return val
-        s = str(val or "0").lower().replace("мин", "").replace("сек", "").strip()
         if ":" in s:
             p = s.split(":")
             return int(p[0]) * 60 + int(p[1])
-        return int(float(s))
+        num = int(float(s))
+        # Если это время и введено число меньше 100 (например 3) -> это минуты
+        if is_time_ex and num < 100:
+            return num * 60
+        return num
     except: return 0
 
-def format_val(v, ex):
+def format_display(v, ex):
     if ex in TIME_EXERCISES:
-        v = force_int(v)
+        v = int(v)
         return f"{v // 60}:{v % 60:02d} мин"
-    return str(force_int(v))
+    return str(v)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+async def load_data():
+    try:
+        chat = await bot.get_chat(TARGET_GROUP_ID)
+        if chat.pinned_message and DB_TAG in chat.pinned_message.text:
+            json_part = chat.pinned_message.text.split("📊")[-1].strip()
+            return json.loads(json_part)
+    except: pass
+    return INITIAL_DATA
+
 async def save_data(data):
-    lines = [DB_TAG, "<b>ДОЛГИ!!!</b>\n"]
+    lines = [DB_TAG, "<b>📊 АКТУАЛЬНЫЕ ДОЛГИ</b>\n"]
     for name, exs in data.items():
-        res = [f"{format_val(v, e)} {EX_MAP.get(e, e)}" for e, v in exs.items() if force_int(v) > 0]
-        lines.append(f"<b>{name}</b> - {', '.join(res) if res else 'долгов нет'}")
+        res = []
+        for e, v in exs.items():
+            val = smart_to_seconds(v, e in TIME_EXERCISES)
+            if val > 0:
+                res.append(f"{format_display(val, e)} {EX_MAP.get(e, e)}")
+        lines.append(f"• <b>{name}</b>: {', '.join(res) if res else 'долгов нет'}")
     
-    # Очищаем JSON перед сохранением, чтобы там были только чистые числа
-    clean_db = {n: {e: force_int(v) for e, v in ex_dict.items()} for n, ex_dict in data.items()}
+    lines.append("\n⚠️ <i>Расчёт по долгам происходит только при свидетелях (минимум 3 из группы + 1 делающий) или на видео!</i>")
+    
+    # Сохраняем чистый JSON
+    clean_db = {n: {e: smart_to_seconds(v, e in TIME_EXERCISES) for e, v in ex_dict.items()} for n, ex_dict in data.items()}
     lines.append(f"\n📊 {json.dumps(clean_db, ensure_ascii=False)}")
     
     try:
@@ -45,14 +76,6 @@ async def save_data(data):
         msg = await bot.send_message(TARGET_GROUP_ID, "\n".join(lines), parse_mode="HTML")
         await bot.pin_chat_message(TARGET_GROUP_ID, msg.message_id)
     except: pass
-
-async def load_data():
-    try:
-        chat = await bot.get_chat(TARGET_GROUP_ID)
-        if chat.pinned_message and DB_TAG in chat.pinned_message.text:
-            return json.loads(chat.pinned_message.text.split("📊")[-1])
-    except: pass
-    return {} # Если база сломана, просто вернем пустую
 
 @dp.message(F.text.startswith("!долг"))
 async def handle(m: types.Message):
@@ -64,22 +87,26 @@ async def handle(m: types.Message):
     name = n_map.get(p[1].upper(), p[1])
     val_str, ex = p[2], p[3].lower()
     
-    # Жесткая проверка на формат времени для обычных упражнений
     if ex not in TIME_EXERCISES and ":" in val_str:
-        return await m.answer(f"❌ Для {ex} нельзя использовать формат времени!")
+        return await m.answer(f"❌ {ex} — это не время, пиши числом!")
 
     data = await load_data()
     if name not in data: data[name] = {}
     
-    current = force_int(data[name].get(ex, 0))
-    new_val = force_int(val_str)
+    is_time = ex in TIME_EXERCISES
+    current = smart_to_seconds(data[name].get(ex, 0), is_time)
+    input_val = smart_to_seconds(val_str, is_time)
     
-    data[name][ex] = (current + new_val) if "+" in p[0] else max(0, current - new_val)
+    if "+" in p[0]:
+        data[name][ex] = current + input_val
+    else:
+        data[name][ex] = max(0, current - input_val)
+
     await save_data(data)
     try: await m.delete()
     except: pass
 
-@dp.message(F.text == "@все" or F.text == "@all")
+@dp.message(F.text.in_(["@все", "@all"]))
 async def call_all(m: types.Message):
     await m.answer("📢 <b>Внимание всем!</b> ⚡️", parse_mode="HTML")
 
@@ -92,4 +119,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) 
