@@ -10,16 +10,16 @@ PORT = int(os.getenv("PORT", 10000))
 TARGET_GROUP_ID = -1003773374182 
 DB_TAG = "#DATABASE_EXERCISE_BOT#"
 
-# Текст, который всегда будет снизу
+# Твой текст про расчет (футер)
 FOOTER_TEXT = (
     "\nРасчёт по долгам происходит только при свидетелях "
     "(минимум 3 из данной группы, +1 - тот, кто делает), либо на видео!"
 )
 
-# Начальные данные (чтобы не с нуля)
+# ИСПРАВЛЕННЫЕ НАЧАЛЬНЫЕ ДАННЫЕ (как на скрине 01:24)
 INITIAL_DATA = {
     "Артём": {"отж": 175, "прис": 100, "план": "3мин", "вис": "6мин", "деньги": "700р"},
-    "Лиза": {"вис": "34сек", "гант": 35, "план": "2:51мин", "прис": 165, "вис_доп": "3мин", "гант_доп": 50},
+    "Лиза": {"вис": "34 секунды", "гант": 85, "план": "2:51мин", "прис": 165, "вис_турник": "3 мин"},
     "Вова": {"план": "2мин", "гант": 50, "отж": 25, "прис": 100},
     "Настя": {"гант": 100, "отж": 100, "прис": 100},
     "Игорь": {"подт": 30, "план": "3мин", "прис": 100}
@@ -30,8 +30,9 @@ dp = Dispatcher()
 
 NAME_MAP = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
 EX_MAP = {
-    "отж": "отжиманий", "прис": "приседаний", "план": "планки",
-    "вис": "вис", "гант": "гантели на спину", "подт": "подтягиваний"
+    "отж": "отжиманий", "прис": "приседаний", "план": "планка",
+    "вис": "вис", "гант": "гантели на спину (каждая рука)", 
+    "подт": "подтягиваний", "деньги": "долг", "вис_турник": "вис на турнике"
 }
 
 async def get_db_message():
@@ -48,25 +49,27 @@ async def load_data():
         try:
             json_part = msg.text.split("📊")[-1].strip()
             return json.loads(json_part)
-        except: return INITIAL_DATA # Если не смогли прочитать, берем начальные
+        except: return INITIAL_DATA
     return INITIAL_DATA
 
 async def save_data(data):
-    lines = ["<b>📊 АКТУАЛЬНЫЕ ДОЛГИ</b>\n"]
+    lines = [f"{DB_TAG}", "<b>ДОЛГИ!!!</b>\n"]
     
     for name, exercises in data.items():
         ex_list = []
         for ex, val in exercises.items():
-            if isinstance(val, int) and val > 0:
-                ex_list.append(f"{val} {EX_MAP.get(ex, ex)}")
-            elif isinstance(val, str):
-                ex_list.append(f"{val} {EX_MAP.get(ex, ex)}")
+            label = EX_MAP.get(ex, ex)
+            # Если значение число — пишем "50 отжиманий", если строка — "3мин планка"
+            if isinstance(val, int):
+                ex_list.append(f"{val} {label}")
+            else:
+                ex_list.append(f"{val} {label}")
         
         if ex_list:
-            lines.append(f"• <b>{name}</b>: {', '.join(ex_list)}")
+            lines.append(f"<b>{name}</b> - {', '.join(ex_list)}")
 
     lines.append(FOOTER_TEXT)
-    lines.append(f"\n{DB_TAG}")
+    # Скрытая часть для базы данных
     lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
     
     text = "\n".join(lines)
@@ -76,7 +79,7 @@ async def save_data(data):
         new_msg = await bot.send_message(TARGET_GROUP_ID, text, parse_mode="HTML")
         await bot.pin_chat_message(TARGET_GROUP_ID, new_msg.message_id)
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка закрепа: {e}")
 
 @dp.message(F.text.lower().contains("@all") | F.text.lower().contains("@все"))
 async def call_everyone(message: types.Message):
@@ -97,7 +100,7 @@ async def handle_debts(message: types.Message):
     try:
         val = int(val_str)
     except:
-        await message.answer("⚠️ Введите число.")
+        await message.answer("⚠️ Ошибка: количество должно быть целым числом.")
         return
 
     full_name = NAME_MAP.get(name_init)
@@ -106,8 +109,8 @@ async def handle_debts(message: types.Message):
     data = await load_data()
     if full_name not in data: data[full_name] = {}
     
-    # Пытаемся работать только с числовыми значениями через команды
     current = data[full_name].get(ex_code, 0)
+    # Если в базе строка (как "3мин"), а мы прибавляем число, сбрасываем в 0 и считаем
     if not isinstance(current, int): current = 0 
     
     if "+" in action:
@@ -118,7 +121,7 @@ async def handle_debts(message: types.Message):
     await save_data(data)
     await message.delete()
 
-async def health_check(request): return web.Response(text="OK")
+async def health_check(request): return web.Response(text="Bot Active")
 
 async def main():
     app = web.Application()
